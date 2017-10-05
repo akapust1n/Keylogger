@@ -15,6 +15,7 @@ Makefile.*
 *.order
 *.out
 *.symvers
+*.swp
 =======
 # Windows image file caches
 Thumbs.db

