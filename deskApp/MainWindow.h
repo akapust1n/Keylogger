@@ -22,7 +22,7 @@ public:
     ~MainWindow();
 
 signals:
-    void dataReceived(QByteArray);
+    void dataReceived(QByteArray data);
 
 private slots:
     void newConnection();

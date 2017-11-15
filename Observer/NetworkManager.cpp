@@ -10,20 +10,20 @@ NetworkManager::NetworkManager(QObject* parent)
 {
 
     socket = new QTcpSocket(this);
+    connected = connectToHost(serviceUrl);
 }
 
 bool NetworkManager::sendDiff(QString diff)
 {
-    auto pp = connectToHost(serviceUrl);
-
-    QByteArray body = stringToJson(diff);
-    //std::cout << "RESULT" << ;
-    bool dd = writeData(body);
-    std::cout << "RESULT: " << dd << std::endl;
-    //std::cout << body.toStdString();
-    // std::cout << "bodysize " << body.size() << std::endl;
-    //  std::cout << diff.toStdString();
-    //networkManager->post(networkRequest, QByteArray::fromStdString("ddddddddddddddddddddd"));
+    if (!connected) {
+        connected = connectToHost(serviceUrl);
+    }
+    if (connected) {
+        QByteArray body = stringToJson(diff);
+        bool dd = writeData(body);
+        std::cout << "RESULT: " << dd << std::endl;
+        return dd;
+    }
 }
 
 void NetworkManager::onPostAnswer(QNetworkReply* reply)
@@ -34,6 +34,7 @@ QByteArray NetworkManager::stringToJson(QString diff)
 {
     //std::cout << diff.toStdString() << std::endl;
     QStringList list1 = diff.split('\n');
+    list1.removeAt(list1.size() - 1);
     std::cout << "size: " << list1.size() << std::endl;
     QJsonArray array = QJsonArray::fromStringList(list1);
 

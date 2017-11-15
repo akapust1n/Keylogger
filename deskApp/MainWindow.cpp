@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
+#include <QDateTime>
 #include <iostream>
 
 MainWindow::MainWindow(QWidget* parent)
@@ -9,7 +10,7 @@ MainWindow::MainWindow(QWidget* parent)
     ui->setupUi(this);
     server = new QTcpServer(this);
     connect(server, SIGNAL(newConnection()), SLOT(newConnection()));
-    connect(server, SIGNAL(dataReceived(QByteArray data)), SLOT(newData(QByteArray data)));
+    connect(this, SIGNAL(dataReceived(QByteArray)), this, SLOT(newData(QByteArray)));
     qDebug() << "Listening:" << server->listen(QHostAddress::Any, 8080);
 }
 
@@ -72,6 +73,8 @@ void MainWindow::readyRead()
 void MainWindow::newData(QByteArray data)
 {
     std::cout << data.toStdString();
+    ui->textinfo->append(QDateTime::currentDateTime().toString());
+    ui->textinfo->append(QString::fromStdString(data.toStdString()));
 }
 qint32 MainWindow::ArrayToInt(QByteArray source)
 {

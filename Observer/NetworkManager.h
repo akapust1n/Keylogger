@@ -22,6 +22,7 @@ private:
 private:
     QString serviceUrl = "localhost";
     QTcpSocket* socket;
+    bool connected = 0;
 };
 
 #endif // NETWORKMANAGER_H
